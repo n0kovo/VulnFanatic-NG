@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "phase": 3,
+  "system_prompt": "You are a hardware-security firmware reviewer auditing Binary Ninja decompiler (HLIL) output for resilience to PHYSICAL hardware attacks — fault injection (voltage/clock/EM glitching) and side-channel leakage (timing/power) — against a firmware hardening guidance standard. You assess whether a SPECIFIC defensive control is implemented in the COMPILED binary. This matters because compiler optimizations can silently remove source-level protections, so each control must be verified in the binary itself, not assumed from source. The user message gives one candidate security-critical function plus context sections (OVERVIEW; SECURITY-RELEVANT APIs CALLED; STRINGS REFERENCED; DECOMPILED BODY; DATA TYPES; CALL PATHS). The rule states the single control to assess. IMPORTANT: a FINDING here means the control is MISSING or VIOLATED on a security-critical path — a HARDENING GAP — not necessarily a software bug. Method: (1) First decide whether this function actually sits on a security-critical path that the control applies to (handles authentication, secrets/keys, crypto, secure boot/attestation, firmware update/rollback, access decisions, or comparable). If the control is not relevant to this function, report is_vulnerable=false. (2) If it is relevant, read the decompiled body and determine whether the control is correctly implemented in the binary. (3) Report is_vulnerable=true ONLY when the function is security-critical AND the control is absent or incorrectly implemented; describe the exact missing protection and where it should go. Decompiler output is imprecise (optimizations may merge/duplicate logic); reason from the evidence shown. USE THE SCRATCHPAD CONCISELY: quote the specific decompiled lines you rely on (labelled with function+address), state whether the control is present, and END with a 'Confidence justification:' line stating high/medium/low and why; the confidence field MUST match it (high = the gap is clearly shown; medium = likely but with inference; low = a lead worth manual review). CONSISTENCY: is_vulnerable must agree with your explanation — if you conclude the control is implemented or the function is not security-critical, set is_vulnerable=false. ALWAYS-RESPOND: even if you are unsure or cannot fully complete the analysis, you MUST still output the JSON verdict — express any doubt through confidence 'low'; never reply with prose, reasoning, or an empty message instead of the JSON object, and keep the response short enough to finish the JSON. Output ONLY a single minified JSON object, no markdown, no code fences, no text before or after it.",
+  "output_schema": "Return exactly this JSON object and nothing else: {\"scratchpad\": \"<quote the specific decompiled lines (with function+address) showing whether the control is present or absent; END with 'Confidence justification: <high|medium|low> because ...' matching the confidence field>\", \"is_vulnerable\": <true|false>, \"confidence\": \"high|medium|low — certainty that this security-critical function is MISSING or VIOLATING the control\", \"severity\": \"critical|high|medium|low|info\", \"cwe\": \"CWE-### or empty\", \"title\": \"<short title naming the missing control>\", \"explanation\": \"<the specific control gap, the evidence, and where the protection should be added>\", \"tainted_input\": \"\", \"recommendation\": \"<the mitigation from the hardening guidance>\"}",
+  "rules": [
+    {
+      "id": "fi_default_fail",
+      "name": "FI: missing default-fail (secure default branch)",
+      "severity": "high",
+      "cwe": "CWE-636",
+      "name_keywords": ["auth", "login", "verify", "validate", "check", "secure", "password", "passwd", "decrypt", "sign", "attest", "boot", "unlock", "permission", "access", "grant"],
+      "name_regex": [],
+      "string_keywords": ["denied", "granted", "incorrect", "invalid", "access"],
+      "prompt": "Control: DEFAULT-FAIL. Every security decision (if-else / switch handling auth, access, secure state) must have its default/final-else/fall-through path lead to a SECURE FAILURE (deny, reset, secure_fail), never to the allow/success path. Inspect the decompiled body: can a value that matches no expected case, or an unhandled default branch, fall through to a permissive/success outcome? Report a gap (is_vulnerable=true) if any security decision can reach a permissive result via an unhandled or default path. If every default path fails securely, or the function is not security-critical, report false."
+    },
+    {
+      "id": "fi_double_check",
+      "name": "FI: critical decision not double-checked",
+      "severity": "high",
+      "cwe": "CWE-1247",
+      "name_keywords": ["auth", "login", "verify", "validate", "secure", "check", "password", "passwd", "sign", "attest", "unlock", "permission", "grant", "compare"],
+      "name_regex": [],
+      "string_keywords": ["password", "denied", "granted"],
+      "prompt": "Control: DOUBLE-CHECK of critical decisions. A security check (authentication, password, signature, secure-state) that gates a protected action must be re-validated at least once (e.g. a redundant nested second check, ideally using a bitwise-complement comparison) so a single glitch on one branch cannot bypass it. Determine whether the decision guarding the protected action is validated only ONCE (gap) or redundantly re-checked. Report a gap if a single conditional gates the protected action with no redundant re-validation. If the decision is redundantly checked, or the function is not security-critical, report false."
+    },
+    {
+      "id": "fi_loop_counter",
+      "name": "FI: security loop without iteration-count validation",
+      "severity": "medium",
+      "cwe": "CWE-1247",
+      "name_keywords": ["verify", "compare", "validate", "hash", "mac", "hmac", "crc", "checksum", "memcmp", "match", "key", "copy", "digest"],
+      "name_regex": [],
+      "string_keywords": [],
+      "prompt": "Control: FAULT-RESISTANT LOOPS. A loop performing a security-critical operation (secret comparison, hashing, signature/length verification) must, after the loop, validate that the expected number of iterations actually ran (e.g. 'if (i == N)') to resist glitches that skip iterations. Report a gap if a security-critical loop's final index / iteration count is not validated after the loop before acting on the result. If the count is validated, or the function is not security-critical, report false."
+    },
+    {
+      "id": "fi_boolean_state",
+      "name": "FI: plain booleans for security decisions",
+      "severity": "medium",
+      "cwe": "CWE-1247",
+      "name_keywords": ["auth", "verify", "validate", "secure", "check", "password", "login", "result", "status", "state", "flag", "grant", "permission", "enable"],
+      "name_regex": [],
+      "string_keywords": [],
+      "prompt": "Control: NO PLAIN BOOLEANS for security decisions. Security success/failure and security states must be represented with constants of LARGE HAMMING DISTANCE (e.g. 0x8C98FB23 / 0x736704DC), not logical 0/1, so a single bit flip cannot flip the decision. Inspect how this function signals or tests security results/states: are they plain 0/1 (or single-bit) values (gap), or large-Hamming-distance sentinel constants? Report a gap if a security decision hinges on a 0/1 or single-bit value. If high-Hamming-distance constants are used, or the function is not security-critical, report false."
+    },
+    {
+      "id": "fi_verify_sensitive_value",
+      "name": "FI: sensitive value used without integrity check",
+      "severity": "medium",
+      "cwe": "CWE-1247",
+      "name_keywords": ["key", "secret", "password", "config", "sensitive", "pointer", "addr", "credential", "token"],
+      "name_regex": [],
+      "string_keywords": [],
+      "prompt": "Control: VERIFY SENSITIVE VALUES before use. Security-critical values (keys, pointers to sensitive buffers, security config) should be shadowed with a checksum or bitwise complement and verified before use, read multiple times on read, and re-read after write, to detect fault-injected corruption. Report a gap if the function uses a security-critical value with NO integrity verification (no complement/checksum/re-read guard around its use). If such verification is present, or the function is not security-critical, report false."
+    },
+    {
+      "id": "fi_control_flow_counter",
+      "name": "FI: critical sequence without control-flow integrity counter",
+      "severity": "medium",
+      "cwe": "CWE-1247",
+      "name_keywords": ["boot", "secure", "init", "sequence", "attest", "provision", "unlock", "update", "flow", "stage", "phase", "verify_chain"],
+      "name_regex": [],
+      "string_keywords": [],
+      "prompt": "Control: CONTROL-FLOW INTEGRITY COUNTER. A critical multi-step sequence (secure boot, attestation, provisioning, key load, firmware update) should accumulate a flow counter (ideally with prime increments per step) and verify the expected total before the protected outcome, so a glitch that skips a step is detected. Report a gap if a multi-step security-critical sequence reaches its protected outcome WITHOUT verifying that all required steps executed (no flow counter / step-completion check). If a flow-integrity check is present, or this is not a multi-step critical sequence, report false."
+    },
+    {
+      "id": "fi_validate_crypto_result",
+      "name": "FI: encryption result not validated (DFA exposure)",
+      "severity": "high",
+      "cwe": "CWE-1247",
+      "name_keywords": ["encrypt", "decrypt", "cipher", "aes", "des", "rsa", "ecc", "sign", "seal", "crypto", "wrap"],
+      "name_regex": ["(EVP_|AES_|DES_|RSA_)"],
+      "string_keywords": [],
+      "prompt": "Control: VALIDATE ENCRYPTION RESULT. To resist differential fault analysis (which injects faults during crypto to recover keys), an encrypt/sign operation on sensitive data should verify its result before use — e.g. decrypt-and-compare against the plaintext, or a redundant recomputation — when not real-time-critical. Report a gap if the function encrypts/signs sensitive data and uses the output WITHOUT any correctness verification. If the result is verified, or the function performs no crypto on sensitive data, report false."
+    },
+    {
+      "id": "fi_bounded_sensitive_output",
+      "name": "FI: unbounded sensitive data output",
+      "severity": "medium",
+      "cwe": "CWE-1247",
+      "name_keywords": ["send", "output", "dump", "transmit", "write", "log", "response", "report", "read_mem", "copy_out"],
+      "name_regex": [],
+      "string_keywords": [],
+      "prompt": "Control: AVOID LARGE SENSITIVE OUTPUT. Data emitted to an external interface should be bounded by an explicit length check AND a source-pointer RANGE check (source within the expected buffer), and emitted in small chunks, so a glitch that redirects the source pointer or inflates the length cannot dump large regions of memory/firmware. Report a gap if the function outputs/copies/transmits from a pointer without both bounding the count and validating the source pointer lies in the expected range. If both checks are present (and output is chunked), or this is not an output path, report false."
+    },
+    {
+      "id": "sc_constant_time_compare",
+      "name": "SC: non-constant-time secret comparison",
+      "severity": "high",
+      "cwe": "CWE-208",
+      "name_keywords": ["compare", "verify", "check", "password", "passwd", "mac", "hmac", "token", "hash", "auth", "match", "equal", "validate"],
+      "name_regex": [],
+      "string_keywords": ["password", "token"],
+      "prompt": "Control: CONSTANT-TIME, FULL-LENGTH secret comparison. Comparing secrets (passwords, MAC/HMAC, tokens, hashes) must NOT early-exit on the first mismatch and must process the full length — memcmp/strcmp/strncmp and byte loops with an early break leak the secret byte-by-byte via timing. Report a gap if a secret is compared with an early-exiting or length-dependent routine. If a constant-time, full-length comparison (accumulate-with-OR/XOR, CRYPTO_memcmp, timingsafe_bcmp) is used, or no secret comparison occurs, report false."
+    },
+    {
+      "id": "sc_nonsequential_sensitive_access",
+      "name": "SC: zero-offset sequential access/clearing of secrets",
+      "severity": "medium",
+      "cwe": "CWE-1300",
+      "name_keywords": ["password", "passwd", "key", "secret", "clear", "wipe", "erase", "zeroize", "scrub", "memset", "copy", "compare"],
+      "name_regex": [],
+      "string_keywords": [],
+      "prompt": "Control: NON-SEQUENTIAL access/clearing of sensitive data. Reading, comparing, or clearing sensitive buffers (keys, passwords) in zero-offset sequential order leaks information via power/timing side channels; access should begin at a RANDOM offset, and clearing should write RANDOM values (not a constant via memset/bzero). Report a gap if sensitive data is processed or cleared in fixed zero-offset sequential order, including using memset/bzero to clear a secret. If randomized-offset access and random-value clearing are used, or no sensitive data is handled, report false."
+    },
+    {
+      "id": "sc_no_userland_crypto",
+      "name": "SC: user-land (software) crypto implementation",
+      "severity": "high",
+      "cwe": "CWE-1240",
+      "name_keywords": ["aes", "des", "sha", "md5", "rsa", "ecc", "ecdsa", "crypto", "encrypt", "decrypt", "cipher", "sbox", "round", "keyschedule", "modexp", "montgomery"],
+      "name_regex": [],
+      "string_keywords": ["rijndael", "sbox"],
+      "prompt": "Control: NO USER-LAND CRYPTO. Cryptographic primitives should run on the MCU's hardware crypto engine or a certified library, not be re-implemented in firmware — software implementations leak through power/EM side channels and are error-prone. Report a gap if this function IMPLEMENTS a cryptographic primitive in software (e.g. AES S-box/round logic, DES permutations, SHA/MD5 compression, big-integer modular exponentiation) rather than delegating to a hardware engine or vetted library. If it delegates to an engine/library API, or performs no cryptography, report false."
+    },
+    {
+      "id": "sc_no_direct_key_access",
+      "name": "SC: direct manipulation of raw key material",
+      "severity": "high",
+      "cwe": "CWE-1300",
+      "name_keywords": ["key", "secret", "privkey", "masterkey", "derive", "keymaterial", "load_key", "keyblob", "keystore"],
+      "name_regex": [],
+      "string_keywords": [],
+      "prompt": "Control: NO DIRECT KEY-MATERIAL ACCESS. Key material should remain inside the crypto engine; firmware should avoid reading, copying, comparing, or otherwise directly manipulating raw key bytes, which exposes them to side-channel analysis. Report a gap if the function reads/copies/compares/derives over RAW key bytes in general-purpose code outside a crypto-engine API. If key material is handled only through engine/library handles (opaque references), or no key bytes are touched, report false."
+    }
+  ]
+}

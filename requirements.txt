@@ -1,0 +1,12 @@
+# VulnFanatic-NG runtime dependencies.
+#
+# The plugin itself has NO required third-party dependencies — it talks to the
+# OpenAI-compatible API over the Python standard library (urllib).
+#
+# tiktoken is OPTIONAL: it makes the context token budget accurate. Without it,
+# VulnFanatic-NG falls back to a character-based estimate. Install it into the Python
+# environment Binary Ninja uses:
+#
+#   pip install tiktoken
+#
+tiktoken>=0.5.0

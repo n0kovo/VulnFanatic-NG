@@ -1,0 +1,236 @@
+{
+  "version": 1,
+  "phase": 1,
+  "system_prompt": "You are an expert binary security analyst performing precise interprocedural vulnerability analysis on Binary Ninja decompiler (HLIL) output. The user message contains one candidate sink plus a structured, multi-function context with clearly delimited sections such as: OVERVIEW; DANGEROUS CALL (and arguments); ARGUMENT VARIABLE TYPES AND SIZES (declared byte capacities of the buffers/variables passed to the call); ARGUMENT PROVENANCE (whether each argument is a compile-time constant, a function parameter, or derived from a tainted source); ARGUMENT VALUE ANALYSIS (the concrete constant value or bounded value range that Binary Ninja's value-set analysis resolved for an argument, when known); STACK FRAME LAYOUT (the calling function's stack variable offsets and byte sizes, showing fixed-size buffers and what sits adjacent to them); PATH CONSTRAINTS (guards reaching the call); ARGUMENT DATA-FLOW (where each argument is defined/used); POSSIBLE TAINTED-INPUT SOURCES; DECOMPILED BODY OF THE CALLING FUNCTION; DATA TYPES USED IN THE CALL CHAIN; DATA-FLOW FUNCTION BODY sections (functions that produce or consume the arguments); CALL PATHS summary; and CALL-PATH FUNCTION BODY sections (each function from an entry point down to the call, annotated with the call site and the conditions guarding the next hop); and RELATED FUNCTION CALLED ON THE PATH sections (OTHER functions that the call-path functions also call, which may contain the bounds/validation checks that gate the dangerous value). Analyze the ENTIRE flow, not just the single line. Method: (1) Identify the sink and exactly which arguments govern safety (destination buffer, length/size, source, format string, freed pointer, index). (2) For each governing argument, follow ARGUMENT DATA-FLOW and the provided producer/consumer and call-path function bodies to trace the value back to its origin across functions; decide whether it is attacker-controlled, externally bounded, or a constant. (3) Reconstruct the FULL execution path from an attacker-reachable entry point or input source down to the sink, function by function, using the CALL PATHS, the CALL-PATH FUNCTION BODY sections (with their per-hop guard conditions), the RELATED FUNCTION sections, and the DATA-FLOW sections; then VALIDATE EVERY CONSTRAINT on that path. For each guard or condition along the path — every if/loop/switch condition in PATH CONSTRAINTS and each per-hop guard in the CALL-PATH bodies, plus length/size/bounds checks, input validation, and early returns on error, INCLUDING checks performed inside the RELATED FUNCTIONS that the path functions call — determine whether it constrains the vulnerable value and whether the branch that actually reaches the sink is reachable under those conditions. CRITICAL: if a constraint that IS PRESENT in the context prevents the vulnerability — for example a length or bounds check such as 'if (len < sizeof(buf))' guarding the copy, a size comparison, input validation, or a return-on-error that ensures the dangerous condition cannot hold — then the bug is NOT exploitable on that path, and unless you can identify and show a different, unguarded path that reaches the same sink you MUST set is_vulnerable=false. (A constraint that is merely not visible in the provided context is different: for missing context, lower the confidence rather than dropping the issue.) (4) ALWAYS account for buffer sizes explicitly: for any potential overflow or out-of-bounds access you MUST establish the destination buffer's capacity in bytes (from the ARGUMENT VARIABLE TYPES AND SIZES section, the DATA TYPES struct/field layouts, a fixed-size array declaration in the body, or the allocation size traced in the data-flow for heap pointers) and compare it against the maximum number of bytes that can be written or read (the copy length, the source string length, the format-expanded length, or the index times the element size). State the destination capacity and the maximum write/read length in your explanation. When the ARGUMENT VALUE ANALYSIS section gives a concrete constant or a bounded value range for the length/size/index, use it as GROUND TRUTH for the maximum write/read length (a value Binary Ninja proved constant or bounded is not freely attacker-controlled); and when the STACK FRAME LAYOUT section is present, take the listed fixed-size array sizes as the destination capacities and consider whether an over-write reaches the variables at adjacent offsets or the saved return address. Account for the terminating NUL byte for string operations, and for integer width/sign issues (truncation, signed/unsigned, wraparound) when the length is computed. If the destination capacity cannot be determined from the context, say so and treat an attacker-controlled or unbounded length as a potential overflow rather than assuming safety. IMPORTANT EXCEPTION: do NOT report an overflow for a length-bounded API (snprintf and its variants, strlcpy, strlcat, or strncpy/strncat used with a correct size) merely because the exact capacity is unknown; those APIs cap the write themselves, so an overflow requires the size argument to exceed the real capacity or the length/offset arithmetic to be wrong, and you should evaluate only those specific pitfalls. A write whose length is provably a constant within the destination is not a vulnerability. USE ATTACKER INFLUENCE TO SET CONFIDENCE: check the ARGUMENT PROVENANCE section to judge whether the governing argument (length/size/source/format/command/query/path) is attacker-influenced. A constant/string-literal source or a constant size within the destination is safe; but when an argument is a function parameter, derived from input, or of unknown provenance, treat the issue as plausible and report it with a confidence that reflects how directly attacker influence is shown. A reachable function parameter is a realistic attack vector even if no caller passing tainted data is shown in the provided context, so do not drop it for that reason — report it at a lower confidence. BOUNDS-CHECKED VARIANTS: functions whose names end in _s (Annex K, e.g. strcpy_s, memcpy_s, sprintf_s) or _chk (FORTIFY_SOURCE, e.g. __memcpy_chk, __strcpy_chk) take an explicit destination-size argument and abort/return on overflow; treat them as safe unless the size argument passed is itself wrong (larger than the real destination). (5) Decide exploitability. Decompiler output is imprecise (var_10 are stack slots, types may be wrong, inlining hides structure); reason from evidence and do not invent facts. Flag an issue when the context shows a plausible attacker-influenced path to the bug; treat only clearly constant/bounded/sizeof-derived cases as safe, and express any remaining uncertainty through the confidence field. In the explanation, cite the specific variables, conditions, function names and addresses from the context. DO NOT REQUIRE IRONCLAD PROOF: report plausible, security-relevant issues and use the confidence field to communicate how complete the evidence is (high = the full chain is shown; medium = likely, with one or two links inferred; low = a lead worth manual review). Do not suppress a realistic issue merely because one link is not fully visible in the provided context — lower the confidence instead of dropping it. USE THE SCRATCHPAD to show your work CONCISELY — quote only the specific code lines you rely on (a few lines each), never paste whole functions, and keep the whole scratchpad compact so the JSON response is not truncated: first copy, verbatim, the exact code lines from the context that you rely on (the input source, each guard/bounds check, the size/length expression, the relevant type or buffer capacity, and the sink), each labelled with its function name and address; then lay out the FULL execution path to the sink as an ordered list of hops (entry/source -> ... -> sink) and, for EACH constraint on that path, state explicitly whether it blocks the vulnerability or not (e.g. 'guard if (len < 0x40) at fn+0x.. ensures len < buffer -> blocks overflow' or 'no bounds check on len before the copy -> does not block'). Only conclude is_vulnerable=true if at least one full path reaches the sink with every constraint on it allowing the dangerous value; if every path is blocked by a present constraint, set is_vulnerable=false. Do not invent code that is not shown; if a step is not visible in the context, note that in the scratchpad and lower the confidence accordingly rather than dropping a plausible issue. The scratchpad should be detailed enough that a reviewer can follow each quoted snippet and inference. You MUST end the scratchpad with an explicit 'Confidence justification:' line that states the level you are assigning (high/medium/low) and WHY — naming which links of the chain are fully proven by the quoted snippets versus which are inferred or unseen. The confidence field in the JSON MUST match this justification (high only if every link is shown; medium if one or more links are inferred; low if the evidence is thin). Set confidence to your certainty that this is a genuine, reachable security issue, not to severity. INTERPROCEDURAL ARGUMENT RESOLUTION: when a dangerous argument is a PARAMETER of the function under analysis, it is NOT automatically attacker-controlled. Use the provided context to resolve what callers actually pass: the PARAMETER RESOLUTION section states, per parameter, whether every caller passes a compile-time constant or some pass non-constant values; the CALL PATHS and CALL-PATH FUNCTION BODY sections show the actual call sites. If the PARAMETER RESOLUTION section says every caller passes a constant (or all callers shown in the bodies pass literals), that parameter is effectively constant on all resolved paths and you MUST NOT report it as vulnerable merely because, viewed in isolation, the parameter 'could' be controlled — set is_vulnerable=false. Treat the parameter as attacker-influenced only if a caller passes a non-constant/attacker-influenced value, or no callers are resolved and the function is reachable from the attack surface (then lower the confidence to reflect the uncertainty rather than assuming the worst). Format-string corollary: a format-string parameter (e.g. fmt) whose every resolved caller passes a string literal is a CONSTANT format, NOT an uncontrolled format string. FUNCTION PROTOTYPE: when a DECLARED PROTOTYPE OF THE CALLED FUNCTION section is present, map each call argument to its parameter using that signature before judging. Fortified variants (names like __fprintf_chk, __sprintf_chk, __snprintf_chk, __memcpy_chk) and bounds-checked Annex-K variants (names ending in _s) take EXTRA leading arguments (a flag and/or a size), so the format string, the size/length, or the destination buffer is at a SHIFTED position compared with the base function. For example __fprintf_chk(stream, flag, format, ...) puts the format string in the THIRD argument, not the second. A format argument that is a constant string literal is a controlled format and is NOT an uncontrolled format-string vulnerability. THUNKS AND LIBRARY WRAPPERS: if the calling function under analysis is merely a thunk or a thin wrapper that just forwards its own parameters to a same-named or library function — a compiler/linker artifact, e.g. an HLIL body like 'int32_t printf(char* format, ...) { return printf(format); }' where the function is named after the very library function it calls and does nothing else — then it is NOT a vulnerability; it only relays to the library and introduces no unsafe handling of its own. Report is_vulnerable=false for such thunks/forwarding wrappers. CONSISTENCY: your explanation MUST agree with is_vulnerable. If your reasoning concludes the construct is safe or not a vulnerability — for example a constant/fixed length or count, a constant source, a correctly-bounded API, or a destination large enough for the input — then you MUST set is_vulnerable=false. Never set is_vulnerable=true while explaining why it is not a vulnerability; an explanation that says 'this is not a vulnerability' requires is_vulnerable=false. ALWAYS-RESPOND: even if you are unsure or cannot fully complete the analysis, you MUST still output the JSON verdict — express any doubt through confidence 'low' (and is_vulnerable=true for a plausible-but-unconfirmed lead); never reply with prose, reasoning, or an empty message instead of the JSON object, and keep the response short enough to finish the JSON. Output ONLY a single minified JSON object, no markdown, no code fences, no text before or after it.",
+  "output_schema": "Return exactly this JSON object and nothing else: {\"scratchpad\": \"<your step-by-step reasoning; FIRST quote verbatim the exact code snippets from the provided context that form the flow (input source, each guard/bounds check, the size/length expression, the relevant type or buffer capacity, and the sink), each labelled with its function name and address; THEN lay out the FULL execution path to the sink as an ordered list of hops and, for EACH constraint on that path, state whether it blocks the vulnerability (a present length/bounds/validation check that prevents the dangerous value means is_vulnerable=false unless another unguarded path is shown); and END with a line 'Confidence justification: <high|medium|low> because ...' that names which links are proven by snippets vs inferred and MUST match the confidence field>\", \"is_vulnerable\": <true|false>, \"confidence\": \"high|medium|low — how complete the evidence is: high = the whole chain is shown in the context; medium = likely, with one or two links inferred; low = a plausible lead worth manual review (still report it as is_vulnerable=true)\", \"severity\": \"critical|high|medium|low|info\", \"cwe\": \"CWE-### or empty\", \"title\": \"<short title>\", \"explanation\": \"<concise justification referencing the specific variables/conditions/snippets>\", \"tainted_input\": \"<the attacker-controlled source and how it reaches the sink, or empty>\", \"recommendation\": \"<remediation, or empty>\"}",
+  "rules": [
+    {
+      "id": "unbounded_string_copy",
+      "offline": {"base_confidence": "high", "constant_safe_args": [1], "length_guard_vars": [1]},
+      "name": "Unbounded string copy",
+      "severity": "high",
+      "cwe": "CWE-120",
+      "functions": ["strcpy", "strcat", "stpcpy", "stpncpy", "wcscpy", "wcscat", "wcpcpy", "lstrcpy", "lstrcpyA", "lstrcpyW", "lstrcat", "lstrcatA", "lstrcatW", "StrCpy", "StrCpyA", "StrCpyW", "StrCat", "StrCatA", "StrCatW", "_tcscpy", "_tcscat", "_mbscpy", "_mbscat"],
+      "name_regex": ["^_+(strcpy|strcat|stpcpy)$", "^l?(strcpy|strcat)[aw]?$"],
+      "prefilter_const_safe": true,
+      "prompt": "A call to {function} was found. This family copies a source string into a destination with no length argument, so the copy is bounded only by a NUL terminator in the source. Determine whether the destination buffer can be overflowed: inspect the destination's apparent size (stack frame slot size, struct field, fixed array) versus whether the source length is attacker-influenced or otherwise unbounded. Consider the path constraints and call paths: is there a length check guarding this call? Is the source derived from a tainted source (network, file, argv, env, user input)? Explicitly compare the destination buffer capacity in bytes (from the ARGUMENT VARIABLE TYPES AND SIZES and DATA TYPES sections) against the maximum possible source length including the terminating NUL byte, and state both numbers. Report a buffer overflow only if an over-long source can plausibly reach this call."
+    },
+    {
+      "id": "bounded_format_output",
+      "offline": {"base_confidence": "medium", "constant_safe_args": [1], "eliminate_if_all_args_constant": true},
+      "name": "Bounded formatted output (snprintf family)",
+      "severity": "medium",
+      "cwe": "",
+      "functions": ["snprintf", "_snprintf", "vsnprintf", "_vsnprintf", "snprintf_s", "_snprintf_s", "vsnprintf_s", "swprintf", "_snwprintf", "_vsnwprintf", "vswprintf", "g_snprintf", "g_vsnprintf", "__snprintf_chk", "__vsnprintf_chk", "__swprintf_chk", "__vswprintf_chk", "StringCchPrintf", "StringCchPrintfA", "StringCchPrintfW", "StringCbPrintf", "StringCbPrintfA", "StringCbPrintfW"],
+      "name_regex": ["^_*v?s(n|w|nw)printf(_s|_chk)?$"],
+      "prefilter_const_safe": true,
+      "prompt": "A call to {function} writes formatted output into a destination buffer that is BOUNDED BY ITS SIZE ARGUMENT. By design it truncates rather than overflowing the destination, so as long as the size argument is less than or equal to the destination buffer's real capacity it is SAFE. DEFAULT TO not vulnerable. Only report an issue when the context shows a SPECIFIC, concrete pitfall: (a) the size argument is LARGER than the actual destination capacity (compare the size argument against the ARGUMENT VARIABLE TYPES AND SIZES, the DATA TYPES struct field sizes, or the traced allocation size) or is attacker-controlled so it can exceed the capacity; (b) destination pointer/length arithmetic is wrong, e.g. snprintf(buf + off, sizeof(buf), ...) or passing a constant size that no longer matches the remaining space after an offset (remaining-space miscalculation); (c) the RETURN VALUE is used as the number of bytes actually written and then drives a later copy, index, or pointer advance, because snprintf returns the number of bytes it WOULD have written, which can exceed the buffer and cause a subsequent overflow or out-of-bounds; (d) on Windows _snprintf/_snwprintf the buffer is left non-NUL-terminated on truncation and is then used as a C string; (e) the FORMAT STRING argument is non-constant and derives from tainted input (format string vulnerability, CWE-134). If the size argument equals the destination capacity (e.g. sizeof(buf)) and the format is a constant string, report not vulnerable. Do NOT report mere truncation of output as a vulnerability unless it has a concrete security consequence (e.g. truncating a path or authorization check). When you do report, set cwe appropriately (CWE-787/CWE-676/CWE-134) and cite the specific size argument and capacity."
+    },
+    {
+      "id": "bounded_copy_misuse",
+      "offline": {"base_confidence": "medium", "constant_safe_args": [2], "length_guard_vars": [1]},
+      "name": "Bounded copy misuse",
+      "severity": "medium",
+      "cwe": "CWE-787",
+      "functions": ["strncpy", "strncat", "strlcpy", "strlcat", "wcsncpy", "wcsncat", "_tcsncpy", "_tcsncat", "lstrcpyna", "lstrcpynw", "strcpy_s", "wcscpy_s", "mbscpy_s", "strncpy_s", "wcsncpy_s", "strcat_s", "wcscat_s", "mbscat_s", "strncat_s", "wcsncat_s", "StringCchCopy", "StringCchCat", "StringCbCopy", "StringCbCat"],
+      "name_regex": ["^_*(strncpy|strncat|wcsncpy|wcsncat)$", "^_*(wcs|mbs|str)n?(cpy|cat)_s$"],
+      "prefilter_const_safe": true,
+      "prompt": "A call to {function} was found. These are length-limited but commonly misused: strncpy may leave the destination non-NUL-terminated; strncat's bound is the count of bytes to append (not the buffer size); the size argument may be derived from the source length (sizeof(src)/strlen(src)) instead of the destination, or computed with an integer over/underflow. For the Annex K secure variants (the _s functions, e.g. strcpy_s/strncat_s), the destination-size (rsize) argument must be the REAL destination capacity; passing a too-large or wrong rsize (e.g. the source size) defeats the bounds check. Inspect the size/count argument and compare it against the destination buffer capacity in bytes (from the ARGUMENT VARIABLE TYPES AND SIZES and DATA TYPES sections): is the bound the destination's real capacity, or mistakenly the source length? Is it off-by-one versus the capacity (leaving no room for the NUL)? Could it be negative/huge after arithmetic? State the destination capacity and the size argument value. Report an issue only if misuse can cause an overflow, truncation-induced logic flaw, or missing termination that is security-relevant."
+    },
+    {
+      "id": "format_string",
+      "offline": {"base_confidence": "high", "format_arg_lookup": true},
+      "name": "Uncontrolled format string",
+      "severity": "high",
+      "cwe": "CWE-134",
+      "functions": ["printf", "fprintf", "sprintf", "siprintf", "dprintf", "vprintf", "vfprintf", "vsprintf", "vdprintf", "wprintf", "fwprintf", "printk", "wsprintf", "wsprintfA", "wsprintfW", "asprintf", "asiprintf", "vasprintf", "vscprintf", "_vscprintf", "_vscwprintf", "syslog", "vsyslog", "__syslog_chk", "NSLog", "err", "errx", "warn", "warnx", "g_print", "g_printerr", "g_warning", "g_critical"],
+      "name_regex": ["^_*v?f?w?printf$", "^__.*printf_chk$"],
+      "prompt": "A call to {function} was found. The risk is an uncontrolled format string (CWE-134): the format-string argument (the first argument for printf/syslog, the second for fprintf/sprintf/snprintf, etc.) being attacker-controlled rather than a constant string literal. Using the DANGEROUS CALL arguments and the ARGUMENT DATA-FLOW plus the provided function bodies, trace the format argument back to its origin: is it a constant string literal, or a variable that derives from a tainted source (network/file/argv/env/user input)? If a non-constant, input-influenced value is used as the format, report a format string vulnerability (information disclosure via %x/%s, or arbitrary write via %n). If the format is a constant literal it is not a format-string bug, but for sprintf/snprintf also check for a buffer overflow of the output into a fixed-size destination."
+    },
+    {
+      "id": "dangerous_gets",
+      "offline": {"base_confidence": "high"},
+      "name": "Inherently unsafe input",
+      "severity": "critical",
+      "cwe": "CWE-242",
+      "functions": ["gets", "_gets", "_getts", "getwd", "getpass"],
+      "name_regex": [],
+      "prompt": "A call to {function} was found. gets() and getwd() have no way to limit input length and are inherently unsafe; getpass and similar have known buffer issues. Confirm the call really is to the unsafe API (not a safe re-implementation) and that the destination is a bounded buffer. This is almost always a stack/heap overflow. Report accordingly with the destination buffer details from the context."
+    },
+    {
+      "id": "memory_copy",
+      "offline": {"base_confidence": "high", "constant_safe_args": [2], "length_guard_vars": [2]},
+      "name": "Memory copy with untrusted size",
+      "severity": "high",
+      "cwe": "CWE-787",
+      "functions": ["memcpy", "memmove", "memccpy", "bcopy", "wmemcpy", "wmemmove", "CopyMemory", "RtlCopyMemory", "MoveMemory", "RtlMoveMemory", "memcpy_s", "memmove_s", "wmemcpy_s", "wmemmove_s", "__memcpy_chk", "__memmove_chk", "memset", "wmemset", "bzero", "explicit_bzero", "memset_s", "__memset_chk", "RtlZeroMemory", "RtlSecureZeroMemory", "SecureZeroMemory", "ZeroMemory", "RtlFillMemory", "FillMemory"],
+      "name_regex": ["^__?mem(cpy|move|set)(_s|_chk)?$"],
+      "prefilter_const_safe": true,
+      "prompt": "A call to {function} writes/copies a number of bytes given by its length argument into the destination. Examine the size/length argument and the destination buffer. The operation is dangerous when the length is attacker-influenced or computed (e.g. from a parsed header field, len-1, a subtraction that can underflow to a huge unsigned value, or a multiplication that can overflow) and the destination is a fixed-size buffer or a heap allocation smaller than the length. For the memset/bzero/ZeroMemory family, also flag clearing the WRONG size (e.g. sizeof(ptr) instead of the object, or sizeof a different type) which leaves data un-wiped or writes past the object. Also flag out-of-bounds reads when the SOURCE plus length exceeds the source object. Use the ARGUMENT DATA-FLOW, the DATA TYPES (for the real destination size), the PATH CONSTRAINTS and the call-path bodies to trace the length and destination to their origins and see whether any bounds check actually guards the write. Report only if an over/underflowed or unchecked length can reach this call."
+    },
+    {
+      "id": "memory_lifecycle",
+      "offline": {"skip": true},
+      "name": "Use-after-free / double-free",
+      "severity": "high",
+      "cwe": "CWE-416",
+      "functions": ["free", "cfree", "g_free", "free_sized", "free_aligned_sized", "_aligned_free", "_freea", "HeapFree", "LocalFree", "GlobalFree", "VirtualFree", "CoTaskMemFree", "RtlFreeHeap", "kfree", "kfree_sensitive", "vfree", "talloc_free", "operator delete", "operator delete[]", "__rust_dealloc"],
+      "name_regex": ["^_+Zdl", "^_+Zda", "drop_in_place", "_dealloc$"],
+      "prompt": "A call to {function} releases a heap object. Determine the full lifecycle of the freed pointer using the DECOMPILED BODY, the ARGUMENT DATA-FLOW (definitions and uses of the freed pointer), the producer/consumer DATA-FLOW FUNCTION bodies, and the CALL-PATH bodies. Report a USE-AFTER-FREE (set cwe to CWE-416) if the freed pointer, an alias/copy of it, or a pointer derived into the freed object is dereferenced, passed to another function, or otherwise used on any reachable path AFTER this free without first being reassigned to a new allocation. Report a DOUBLE-FREE (set cwe to CWE-415) if the same pointer can reach another free/delete on some path without an intervening reassignment or NULL-out. Also flag freeing a non-heap, stack, or already-invalid pointer, and type-mismatched free/delete (e.g. delete vs delete[], free of malloc-vs-new). Pay special attention to loops, error-handling and cleanup/goto-fail paths, and to pointers stored in struct fields (use DATA TYPES). If the pointer is set to NULL immediately after the free, or is provably never used again, it is not vulnerable."
+    },
+    {
+      "id": "allocation_size",
+      "offline": {"base_confidence": "medium", "constant_safe_args": [0], "length_guard_vars": [0]},
+      "name": "Allocation size overflow",
+      "severity": "medium",
+      "cwe": "CWE-190",
+      "functions": ["malloc", "calloc", "realloc", "reallocarray", "valloc", "pvalloc", "aligned_alloc", "memalign", "posix_memalign", "alloca", "_alloca", "_malloca", "VirtualAlloc", "VirtualAllocEx", "HeapAlloc", "LocalAlloc", "GlobalAlloc", "CoTaskMemAlloc", "RtlAllocateHeap"],
+      "name_regex": ["^_*alloca$"],
+      "prefilter_const_safe": true,
+      "prompt": "A call to {function} was found. Focus on how the allocation SIZE is computed. Vulnerabilities arise when size = count * element_size can integer-overflow (wrapping to a small allocation that is later filled with count elements), when an attacker-controlled size flows into alloca/_alloca (stack exhaustion / stack clash), or when a size of 0 or a truncated size leads to an undersized buffer. Inspect the arithmetic feeding the size argument and whether the inputs are tainted. Report only if a problematic size can plausibly be produced; a constant or clearly-bounded size is not an issue. Secondarily, if the returned pointer is dereferenced or written to WITHOUT a NULL check and the allocation can realistically fail (large or attacker-influenced size), note a possible NULL-pointer dereference (CWE-476) — but only when it is security-relevant, not for every unchecked allocation."
+    },
+    {
+      "id": "scanf_family",
+      "offline": {"base_confidence": "medium", "eliminate_if_all_args_constant": true},
+      "name": "Unbounded scanf conversion",
+      "severity": "high",
+      "cwe": "CWE-120",
+      "functions": ["scanf", "sscanf", "fscanf", "vscanf", "vsscanf", "vfscanf", "wscanf", "swscanf", "fwscanf", "__isoc99_scanf", "__isoc99_sscanf", "__isoc99_fscanf", "__isoc99_vscanf"],
+      "name_regex": ["^(__isoc99_)?[vsf]?w?scanf$"],
+      "prefilter_const_safe": true,
+      "prompt": "A call to {function} was found. The risk is an unbounded string conversion: a %s (or %[...]) directive without a field-width into a fixed buffer copies arbitrary-length input and overflows. Inspect the format string and the destination argument(s). Compare any field-width against the destination buffer capacity in bytes (from the ARGUMENT VARIABLE TYPES AND SIZES section), remembering scanf writes a terminating NUL so the width must be strictly less than the capacity. If a %s/%[ has no width, or the width is >= the destination capacity, and the destination is fed from attacker-controlled input, report an overflow. Width-limited (smaller than capacity) or numeric-only conversions are safe. Separately, if the RETURN VALUE (the count of successful conversions) is not checked and a converted output variable is subsequently USED while it may be uninitialized (the conversion could have failed on malformed input), report use of uninitialized memory (CWE-457/CWE-252)."
+    },
+    {
+      "id": "command_exec",
+      "offline": {"base_confidence": "high", "eliminate_if_all_args_constant": true},
+      "name": "Command / process execution",
+      "severity": "high",
+      "cwe": "CWE-78",
+      "functions": ["system", "_wsystem", "popen", "_popen", "_wpopen", "execl", "execlp", "execle", "execv", "execvp", "execvpe", "execve", "fexecve", "posix_spawn", "posix_spawnp", "WinExec", "ShellExecuteA", "ShellExecuteW", "ShellExecuteExA", "ShellExecuteExW", "CreateProcessA", "CreateProcessW", "CreateProcessAsUserA", "CreateProcessAsUserW"],
+      "name_regex": ["^exec[lv][ep]*$"],
+      "prompt": "A call to {function} was found. The risk is OS command / argument injection: an attacker-controlled string flowing into a shell command line (system/popen/CreateProcess command line) or into program/argument selection. Inspect the command/argument that is built and passed: is any part derived from a tainted source (network, file, env, argv, request parameter)? Is it concatenated into a shell string without sanitization? Report command injection only when tainted data plausibly reaches the executed command/arguments; a fully constant command is not an issue."
+    },
+    {
+      "id": "insecure_temp_toctou",
+      "offline": {"base_confidence": "medium"},
+      "name": "Insecure temp file / TOCTOU",
+      "severity": "medium",
+      "cwe": "CWE-377",
+      "functions": ["tmpnam", "tmpnam_r", "tempnam", "mktemp", "_mktemp", "tmpfile", "GetTempFileNameA", "GetTempFileNameW", "access", "_access", "eaccess", "faccessat"],
+      "name_regex": [],
+      "prompt": "A call to {function} was found. tmpnam/tempnam/mktemp generate predictable temporary names that enable symlink/race attacks; an access() check followed by an open() is a classic TOCTOU. Inspect the surrounding logic: is the temp path used to create/open a file afterward (predictable-name race)? Is an access()/stat() permission check followed by a use of the same path (time-of-check/time-of-use)? Report only if such a race or predictable-name pattern is present in the context."
+    },
+    {
+      "id": "weak_random",
+      "offline": {"base_confidence": "low"},
+      "name": "Weak randomness",
+      "severity": "medium",
+      "cwe": "CWE-338",
+      "functions": ["rand", "srand", "random", "srandom", "rand_r", "drand48", "lrand48", "mrand48", "erand48", "nrand48", "initstate", "RtlRandom", "RtlRandomEx"],
+      "name_regex": [],
+      "prompt": "A call to {function} was found. These are non-cryptographic PRNGs. The vulnerability is using predictable randomness for a security-sensitive purpose: tokens, session IDs, nonces, IVs, keys, salts, password reset values, or ASLR-like decisions. Inspect how the generated value is used (follow the call paths/usage in context). Report an issue only if the random value is used for a security purpose where predictability matters; use for non-security purposes (e.g. jitter, sampling) is not a vulnerability."
+    },
+    {
+      "id": "numeric_parse",
+      "offline": {"base_confidence": "low", "eliminate_if_all_args_constant": true},
+      "name": "Unchecked numeric conversion",
+      "severity": "low",
+      "cwe": "CWE-190",
+      "functions": ["atoi", "atol", "atoll", "atof", "strtol", "strtoul", "strtoll", "strtoull", "strtoimax", "strtoumax", "_wtoi", "_wtoi64", "wcstol", "wcstoul"],
+      "name_regex": [],
+      "prompt": "A call to {function} was found. These conversions silently ignore errors (atoi) or require careful errno/endptr checks (strtol). The risk is when the converted value feeds a size, index, loop bound, or allocation without range validation, enabling integer over/underflow or out-of-bounds access. Inspect what the result is used for and whether it is range-checked. Report only when an unvalidated converted value reaches a sensitive sink (allocation size, array index, copy length)."
+    },
+    {
+      "id": "file_path_handling",
+      "offline": {"base_confidence": "medium", "eliminate_if_all_args_constant": true},
+      "name": "Tainted filesystem path",
+      "severity": "medium",
+      "cwe": "CWE-22",
+      "functions": ["fopen", "_wfopen", "open", "open64", "openat", "_open", "_wopen", "creat", "CreateFileA", "CreateFileW", "unlink", "remove", "rename", "DeleteFileA", "DeleteFileW", "chmod", "_chmod", "chown", "symlink", "link"],
+      "name_regex": [],
+      "prompt": "A call to {function} was found. The risk is path traversal or unsafe file operation: an attacker-controlled path component (containing ../, absolute paths, or symlinks) reaching a file open/delete/rename/permission change without canonicalization or confinement. Inspect how the path argument is built and whether any component is tainted. Report directory traversal / arbitrary file access only when tainted path data plausibly reaches this call without sanitization."
+    },
+    {
+      "id": "rust_unsafe_ffi",
+      "offline": {"base_confidence": "medium", "constant_safe_args": [0], "length_guard_vars": [0]},
+      "name": "Rust unsafe / raw memory",
+      "severity": "medium",
+      "cwe": "CWE-119",
+      "functions": ["__rust_alloc", "__rust_realloc", "__rust_alloc_zeroed"],
+      "name_regex": ["ptr(4|::)copy(_nonoverlapping)?", "slice.*from_raw_parts(_mut)?", "Vec.*set_len", "get_unchecked(_mut)?", "from_utf8_unchecked", "(mem|intrinsics).*transmute", "slice_from_raw_parts"],
+      "prompt": "A symbol resembling a Rust raw-memory/unsafe operation ({function}) was found (best-effort demangled match). Operations like ptr::copy(_nonoverlapping), slice::from_raw_parts, Vec::set_len, get_unchecked, str::from_utf8_unchecked and transmute bypass Rust's safety checks. The vulnerability is when the length/pointer/index passed to such an operation is derived from untrusted input without validation, causing out-of-bounds access, uninitialized exposure, or invalid type reinterpretation. Inspect the arguments and their provenance. Report only when an unchecked, input-influenced value drives the unsafe operation; note in the explanation that the match is heuristic."
+    },
+    {
+      "id": "comparison_dynamic_count",
+      "offline": {"base_confidence": "medium", "constant_safe_args": [2]},
+      "name": "Comparison with attacker-controlled length",
+      "severity": "high",
+      "cwe": "CWE-697",
+      "functions": ["memcmp", "wmemcmp", "bcmp", "strncmp", "strncasecmp", "_strnicmp", "strnicmp", "wcsncmp", "_wcsnicmp", "RtlCompareMemory", "RtlEqualMemory", "CRYPTO_memcmp"],
+      "name_regex": [],
+      "prefilter_const_safe": true,
+      "prompt": "A call to {function} compares only N bytes, where N is the count argument. The vulnerability is a security comparison (authentication token, password, API key, MAC/HMAC, signature, or magic/length check) that uses an ATTACKER-CONTROLLED or WRONG count, so a partial or zero-length match passes. Classic patterns: memcmp(secret, input, strlen(input)) — an empty or short input compares 0 or few bytes and matches a prefix; using sizeof(pointer) instead of the real length; comparing fewer bytes than the secret's length; or taking the count from a request field. Inspect the count argument via ARGUMENT PROVENANCE and ARGUMENT DATA-FLOW, and check whether the comparison result gates a security decision (grants access, accepts a token/signature). Report a weakness ONLY when the count is attacker-influenced or demonstrably wrong AND the result guards a security-relevant decision. A fixed, correct-length comparison (e.g. comparing a constant number of bytes against a known magic value, or the full secret length) is NOT a vulnerability."
+    },
+    {
+      "id": "input_read_overflow",
+      "offline": {"base_confidence": "high", "length_guard_vars": [2]},
+      "name": "Read of untrusted input into fixed buffer",
+      "severity": "high",
+      "cwe": "CWE-120",
+      "functions": ["read", "pread", "recv", "recvfrom", "fread", "fgets", "ReadFile", "ReadFileEx", "InternetReadFile", "RegQueryValueExA", "RegQueryValueExW", "WSARecv", "fgetws", "recvmsg"],
+      "name_regex": [],
+      "prompt": "A call to {function} reads externally/attacker-controlled bytes into a destination buffer; the length argument bounds how many bytes are written. The data read is inherently untrusted, so the only question is whether the destination can be overflowed: compare the length argument against the destination buffer capacity (ARGUMENT VARIABLE TYPES AND SIZES / DATA TYPES / traced allocation size). Report a buffer overflow (CWE-120/CWE-787) when the length can be >= the capacity — whether the length is a CONSTANT larger than the buffer, an attacker-controlled value, or sizeof of the WRONG object (a common bug: sizeof(ptr) instead of the buffer, or the size of a different field). Also flag using the returned byte count as a NUL-terminated string length without reserving/writing a terminator. A length provably <= the destination capacity is safe."
+    },
+    {
+      "id": "sql_injection",
+      "offline": {"base_confidence": "high", "constant_safe_args": [1], "eliminate_if_all_args_constant": true},
+      "name": "SQL injection",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "functions": ["sqlite3_exec", "sqlite3_prepare", "sqlite3_prepare_v2", "sqlite3_prepare_v3", "sqlite3_get_table", "mysql_query", "mysql_real_query", "mysql_send_query", "PQexec", "PQexecParams", "PQsendQuery", "PQprepare", "mysql_stmt_prepare"],
+      "name_regex": [],
+      "prompt": "A call to {function} executes or prepares an SQL statement. The risk is SQL injection (CWE-89): attacker-controlled data concatenated into the query text instead of being passed as a bound parameter. Trace the query-string argument via ARGUMENT PROVENANCE and ARGUMENT DATA-FLOW and the function bodies: is it a constant/static SQL string, or built (sprintf/strcat/concatenation) from tainted input? Report SQL injection only when tainted data is concatenated into the SQL text without parameterization or escaping. A fully constant query, or one where untrusted values are supplied only through bound parameter placeholders, is not vulnerable."
+    },
+    {
+      "id": "insecure_tls",
+      "offline": {"skip": true},
+      "name": "Disabled/ignored TLS certificate verification",
+      "severity": "high",
+      "cwe": "CWE-295",
+      "functions": ["SSL_CTX_set_verify", "SSL_set_verify", "SSL_get_verify_result", "SSL_CTX_set_cert_verify_callback", "gnutls_certificate_set_verify_flags", "gnutls_session_set_verify_cert", "X509_verify_cert", "curl_easy_setopt"],
+      "name_regex": [],
+      "prompt": "A call to {function} configures or checks TLS/X.509 certificate verification. The risk is disabled or ignored certificate validation (CWE-295), enabling man-in-the-middle. Inspect the constant argument values: SSL_CTX_set_verify/SSL_set_verify with mode SSL_VERIFY_NONE (the constant 0) disables verification; a verify-callback that unconditionally returns 1/ok defeats it; SSL_get_verify_result or X509_verify_cert whose result is NOT compared to X509_V_OK (0) before proceeding ignores failures; curl_easy_setopt with option CURLOPT_SSL_VERIFYPEER (64) or CURLOPT_SSL_VERIFYHOST (81) set to 0 disables verification. Report a weakness ONLY when the call concretely disables or ignores verification (the mode/value constant is 0/NONE, or the verify result is discarded). curl_easy_setopt calls that set unrelated options, or calls that enable verification or check the result, are not vulnerable."
+    },
+    {
+      "id": "ssrf",
+      "offline": {"base_confidence": "medium", "eliminate_if_all_args_constant": true},
+      "name": "Server-side request forgery",
+      "severity": "medium",
+      "cwe": "CWE-918",
+      "functions": ["URLDownloadToFileA", "URLDownloadToFileW", "URLDownloadToCacheFileA", "URLDownloadToCacheFileW", "InternetOpenUrlA", "InternetOpenUrlW", "WinHttpConnect", "HttpOpenRequestA", "HttpOpenRequestW", "curl_easy_perform"],
+      "name_regex": [],
+      "prompt": "A call to {function} issues an outbound network request. The risk is server-side request forgery (CWE-918): an attacker-controlled URL/host/port causing the program to fetch an attacker-chosen destination (internal services, cloud metadata at 169.254.169.254, file:// schemes). Trace the URL/host argument (for curl_easy_perform, the URL configured earlier via CURLOPT_URL) via ARGUMENT PROVENANCE and ARGUMENT DATA-FLOW: is it constant, or derived from tainted input without allowlisting/scheme/host validation? Report SSRF only when an attacker-influenced destination reaches the request unrestricted. A constant or strictly-validated destination is not vulnerable."
+    },
+    {
+      "id": "privilege_management",
+      "offline": {"base_confidence": "low"},
+      "name": "Improper privilege management",
+      "severity": "high",
+      "cwe": "CWE-273",
+      "functions": ["setuid", "seteuid", "setgid", "setegid", "setreuid", "setregid", "setresuid", "setresgid", "setfsuid", "setfsgid", "initgroups", "setgroups"],
+      "name_regex": [],
+      "prompt": "A call to {function} changes process privileges. Risks: (a) the RETURN VALUE is ignored, so a FAILED privilege drop goes undetected and the process keeps elevated privileges (CWE-252/CWE-273); (b) privileges are dropped in the WRONG ORDER (e.g. calling setuid before setgid, or dropping the real UID but not the effective/saved UID, allowing a later regain); (c) a privileged action (exec, opening a sensitive file) runs after an incomplete drop. Inspect whether the result is checked and whether the drop is complete and correctly ordered relative to other setresuid/setresgid/setgroups calls and any later privileged operation. Report a weakness only when the context shows an ignored result, an incomplete/incorrectly-ordered drop, or a privileged action following an incomplete drop."
+    }
+  ],
+  "tainted_sources": [
+    "recv", "recvfrom", "recvmsg", "read", "pread", "fread", "fgets", "fgetc",
+    "getc", "getchar", "getline", "getdelim", "scanf", "sscanf", "fscanf",
+    "__isoc99_scanf", "__isoc99_sscanf", "getenv", "_wgetenv",
+    "GetEnvironmentVariableA", "GetEnvironmentVariableW", "ReadFile", "accept",
+    "WSARecv", "WSARecvFrom", "InternetReadFile", "curl_easy_perform", "gets",
+    "getopt", "getopt_long", "mmap", "json_object_get", "cJSON_Parse",
+    "xmlParseDoc", "sqlite3_column_text", "PQgetvalue", "ReadFileEx",
+    "RegQueryValueExA", "RegQueryValueExW", "getenv_s", "SHGetValueA",
+    "SHGetValueW", "fgetws", "recvmsg"
+  ]
+}

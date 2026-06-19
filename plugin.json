@@ -1,0 +1,27 @@
+{
+    "pluginmetadataversion": 2,
+    "name": "VulnFanatic-NG",
+    "type": ["ui"],
+    "api": ["python3"],
+    "description": "LLM-assisted vulnerability research over Binary Ninja decompiler output.",
+    "longdescription": "VulnFanatic-NG adds a sidebar panel that scans the current binary in up to three phases. Phase 1 finds calls to dangerous functions (strcpy, memcpy, system, ...) and builds a decompiler-centric context (call path, path constraints, the calling function body, arguments, the called function's declared prototype, and tainted-source hints) for each call site. Phase 2 (when symbols/variable names are available) locates security-sensitive code (authentication, cryptography, signing, ...). Phase 3 (opt-in and online-only) audits firmware for missing or weak hardware-attack hardening controls (fault-injection / side-channel mitigations). Each context is sent to an LLM together with a tailored prompt; only confirmed issues are reported. Findings are listed with clickable references that navigate the view to the vulnerable code, and can be triaged (Real Issue / False Positive) and exported as fine-tuning data. The LLM backend is fully configurable in Settings (OpenAI-compatible by default, plus Anthropic Claude, Google Gemini, and Azure OpenAI) and is typically a locally hosted model. An offline (no-LLM) programmatic Phase 1 mode is also available.",
+    "license": {
+        "name": "Apache-2.0",
+        "text": "Copyright 2026 Martin Petran\n\nLicensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at\n\n\thttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License."
+    },
+    "platforms": ["Darwin", "Linux", "Windows"],
+    "installinstructions": {
+        "Darwin": "Optionally `pip install tiktoken` for accurate token counting. Symlink or copy the `vulnfanatic_ng` folder into your Binary Ninja user plugins directory.",
+        "Linux": "Optionally `pip install tiktoken` for accurate token counting. Symlink or copy the `vulnfanatic_ng` folder into your Binary Ninja user plugins directory.",
+        "Windows": "Optionally `pip install tiktoken` for accurate token counting. Copy the `vulnfanatic_ng` folder into your Binary Ninja user plugins directory."
+    },
+    "dependencies": {
+        "pip": [],
+        "apt": [],
+        "installers": [],
+        "other": []
+    },
+    "version": "1.0.0",
+    "author": "Martin Petran",
+    "minimumbinaryninjaversion": 4000
+}

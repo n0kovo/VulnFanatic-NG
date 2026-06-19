@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "phase": 2,
+  "system_prompt": "You are an expert application-security reviewer auditing Binary Ninja decompiler (HLIL) output for security-design weaknesses (beyond memory safety). The binary has symbols/variable names, so identifiers are meaningful. The user message contains a target function plus delimited context sections such as: OVERVIEW; SECURITY-RELEVANT APIs CALLED; STRINGS REFERENCED IN THIS FUNCTION; DECOMPILED BODY; DATA TYPES USED IN THIS FUNCTION; and CALL PATHS. Reason about the security logic actually implemented: authentication, access control, cryptography (algorithms/modes/keys/IVs), signing/verification, secret/key handling, session/token management, and input validation. Method: follow the control flow and the security-relevant API calls and constants/strings; use DATA TYPES to understand keys, buffers and structures; check how decisions (allow/deny, valid/invalid) are computed and whether results are correctly enforced. Report a weakness when the code as shown plausibly implements the security function incorrectly or weakly, citing the specific evidence (identifiers, constants, APIs, conditions). DO NOT REQUIRE IRONCLAD PROOF: report plausible, security-relevant weaknesses and use the confidence field to communicate how complete the evidence is (high = clearly shown in the context; medium = likely, with some inference; low = a lead worth manual review). USE THE SCRATCHPAD to show your work CONCISELY — quote only the specific code lines / strings / API calls you rely on (a few each), never paste whole functions, and keep it compact so the JSON response is not truncated: copy, verbatim, the exact lines from the context that you rely on (each labelled with its function and address), then explain how they demonstrate the weakness. Do not invent code that is not shown; if a piece of evidence is not visible, note that and lower the confidence rather than dropping a plausible weakness. The scratchpad should let a reviewer follow each quoted snippet. You MUST end the scratchpad with an explicit 'Confidence justification:' line stating the level (high/medium/low) and WHY — naming which evidence is directly shown versus inferred. The confidence field MUST match this justification. Set confidence to how complete the evidence is, not to severity. THUNKS AND LIBRARY WRAPPERS: if the function is merely a thunk or thin wrapper that forwards its arguments to a same-named or library function (a compiler/linker artifact, e.g. a function named after the library call it relays to), it implements no security logic of its own and is NOT a weakness; report is_vulnerable=false. CONSISTENCY: your explanation MUST agree with is_vulnerable. If your reasoning concludes the code is sound or the construct is not a weakness, you MUST set is_vulnerable=false; never set is_vulnerable=true while explaining why it is not a weakness. If the code is clearly sound, report it as not vulnerable. ALWAYS-RESPOND: even if you are unsure or cannot fully complete the analysis, you MUST still output the JSON verdict — express any doubt through confidence 'low'; never reply with prose, reasoning, or an empty message instead of the JSON object, and keep the response short enough to finish the JSON. Output ONLY a single minified JSON object, no markdown, no code fences, no text before or after it.",
+  "output_schema": "Return exactly this JSON object and nothing else: {\"scratchpad\": \"<your step-by-step reasoning; FIRST quote verbatim the exact code lines / strings / API calls from the provided context that demonstrate the weakness, each labelled with its function and address; THEN explain how they prove it; and END with a line 'Confidence justification: <high|medium|low> because ...' that names which evidence is shown vs inferred and MUST match the confidence field>\", \"is_vulnerable\": <true|false>, \"confidence\": \"high|medium|low — how complete the evidence is: high = clearly shown in the context; medium = likely, with some inference; low = a plausible lead worth manual review (still report it as is_vulnerable=true)\", \"severity\": \"critical|high|medium|low|info\", \"cwe\": \"CWE-### or empty\", \"title\": \"<short title>\", \"explanation\": \"<the specific weakness and the evidence in the code>\", \"tainted_input\": \"<relevant untrusted input if applicable, else empty>\", \"recommendation\": \"<remediation, or empty>\"}",
+  "rules": [
+    {
+      "id": "authentication",
+      "name": "Authentication logic",
+      "severity": "high",
+      "cwe": "CWE-287",
+      "name_keywords": ["auth", "login", "logon", "signin", "passwd", "password", "credential", "authenticate", "verifypass", "checkpass", "pam_", "validateuser", "checkuser"],
+      "name_regex": [],
+      "string_keywords": ["password", "username", "login failed", "invalid credentials", "incorrect password", "authentication failed", "access denied", "wrong password"],
+      "prompt": "This function appears to implement authentication. Review it for authentication weaknesses: hardcoded/backdoor credentials, comparison against a literal password or key, authentication bypass via missing/short-circuited checks, success on error paths, accepting empty/null credentials, case-insensitive or truncated comparisons, missing rate limiting, or trusting client-supplied role/flags. Examine the comparisons and control flow shown. Report a weakness only if the code demonstrates an actual authentication flaw."
+    },
+    {
+      "id": "weak_cryptography",
+      "name": "Weak or misused cryptography",
+      "severity": "high",
+      "cwe": "CWE-327",
+      "name_keywords": ["encrypt", "decrypt", "crypt", "cipher", "aes", "des", "3des", "rc4", "blowfish", "md5", "md4", "sha1", "rot13", "xor_", "_xor", "obfuscate", "scramble"],
+      "name_regex": ["(EVP_|MD5_|MD4_|SHA1_|DES_|RC4|BF_)", "BCrypt(Encrypt|Decrypt|HashData)", "mbedtls_(aes|des|md5|sha1|cipher)", "CryptEncrypt|CryptDecrypt|CryptCreateHash"],
+      "string_keywords": ["aes", "des", "rc4", "md5", "sha1", "ecb", "-----begin", "blowfish"],
+      "prompt": "This function appears to perform cryptography. Review for cryptographic weaknesses: use of broken/weak primitives (MD5/SHA1 for security, DES/3DES, RC4, XOR/ROT 'encryption'), ECB mode, static/zero/hardcoded keys or IVs, predictable IV/nonce, nonce reuse, missing authentication (encrypt-without-MAC), homemade crypto, or keys derived weakly. Inspect the algorithm, mode, and key/IV material shown. Report only when a concrete cryptographic weakness is evident."
+    },
+    {
+      "id": "signing_verification",
+      "name": "Signature / certificate verification",
+      "severity": "high",
+      "cwe": "CWE-347",
+      "name_keywords": ["verify", "sign", "signature", "hmac", "rsa", "ecdsa", "dsa", "ed25519", "x509", "certificate", "cert_", "checksig", "validate_cert", "checkmac", "mac_verify"],
+      "name_regex": ["(RSA_verify|ECDSA_verify|EVP_DigestVerify|X509_verify|SSL_get_verify_result)"],
+      "string_keywords": ["signature", "certificate", "verify failed", "invalid signature", "x509"],
+      "prompt": "This function appears to verify a signature, MAC, or certificate. Review for verification weaknesses: signature/MAC check whose result is ignored or inverted, verification that always returns success, certificate validation disabled or hostname not checked, accepting self-signed/expired certs, comparing signatures with a non-constant-time or truncated compare, or confusing signing with verifying. Inspect how the verification result controls the outcome. Report only when verification is actually bypassable or incorrect."
+    },
+    {
+      "id": "session_token",
+      "name": "Session / token management",
+      "severity": "medium",
+      "cwe": "CWE-384",
+      "name_keywords": ["session", "token", "jwt", "cookie", "csrf", "xsrf", "bearer", "apikey", "nonce", "refreshtoken", "accesstoken"],
+      "name_regex": [],
+      "string_keywords": ["session", "token", "jwt", "cookie", "csrf", "set-cookie", "authorization: bearer"],
+      "prompt": "This function appears to manage sessions or tokens. Review for weaknesses: predictable or low-entropy session/token generation, missing session invalidation/rotation on login, no expiry, tokens transmitted/compared insecurely, JWT 'alg:none' or unverified signatures, missing CSRF protection, or secrets logged. Inspect how the token is generated, stored, and validated. Report only when a concrete weakness is shown."
+    },
+    {
+      "id": "access_control",
+      "name": "Access control / privilege",
+      "severity": "high",
+      "cwe": "CWE-285",
+      "name_keywords": ["isadmin", "is_admin", "authorize", "authz", "permission", "privilege", "setuid", "seteuid", "setgid", "setegid", "access_control", "checkaccess", "checkperm", "hasrole", "has_role", "acl", "elevate", "impersonate"],
+      "name_regex": ["set(re)?[ug]id", "ImpersonateLoggedOnUser|AdjustTokenPrivileges"],
+      "string_keywords": ["permission denied", "not authorized", "admin", "privilege", "forbidden"],
+      "prompt": "This function appears to perform access control or privilege management. Review for weaknesses: missing authorization checks before a privileged action, privilege escalation, dropping privileges incorrectly or not at all (setuid/seteuid return value ignored, wrong order), confused-deputy issues, client-controlled role/permission flags, or default-allow logic. Inspect the checks and the order of privilege operations. Report only when an authorization or privilege flaw is evident."
+    },
+    {
+      "id": "secret_key_handling",
+      "name": "Secret / key generation and handling",
+      "severity": "high",
+      "cwe": "CWE-798",
+      "name_keywords": ["keygen", "generatekey", "generate_key", "derivekey", "derive_key", "pbkdf2", "scrypt", "bcrypt", "argon2", "getrandom", "randbytes", "secret", "passphrase", "masterkey", "privatekey", "seedkey"],
+      "name_regex": ["RAND_bytes|RAND_pseudo_bytes|BCryptGenRandom|CryptGenRandom"],
+      "string_keywords": ["secret", "private key", "-----begin", "api_key", "apikey", "password ="],
+      "prompt": "This function appears to generate or handle secrets/keys. Review for weaknesses: hardcoded keys/passwords/secrets embedded in the binary, keys/IVs derived from predictable values (PID, time, weak PRNG), insufficient key length, missing or weak key-derivation (no salt, low iteration count, fast hash for passwords), secrets written to logs/disk in cleartext, or secrets not wiped. Inspect the key material and how it is produced/stored. Report only when a concrete secret-handling weakness is evident."
+    },
+    {
+      "id": "input_validation",
+      "name": "Input validation / sanitization",
+      "severity": "medium",
+      "cwe": "CWE-20",
+      "name_keywords": ["sanitize", "validate", "escape", "unescape", "filter", "whitelist", "blacklist", "allowlist", "denylist", "normalize", "canonicalize", "checkinput", "parseinput"],
+      "name_regex": [],
+      "string_keywords": ["invalid input", "../", "<script", "drop table", "select * from"],
+      "prompt": "This function appears to validate or sanitize input. Review for weaknesses: incomplete sanitization (blacklist bypasses, single-pass replace that can be re-introduced, missing canonicalization before checks), validating after use, decoding after validating, or sanitization that does not match the sink it protects (SQL vs shell vs HTML vs path). Inspect what is filtered and whether it is sufficient for the consuming sink. Report only when a concrete bypass or insufficient-validation issue is evident."
+    },
+    {
+      "id": "constant_time_compare",
+      "name": "Non-constant-time secret comparison",
+      "severity": "medium",
+      "cwe": "CWE-208",
+      "name_keywords": ["comparemac", "compare_mac", "verifymac", "comparehash", "comparetoken", "comparesecret", "comparedigest", "timingsafe", "ct_compare"],
+      "name_regex": [],
+      "string_keywords": [],
+      "prompt": "This function appears to compare secrets (MAC/HMAC, token, password hash, signature). Review for a timing side channel: comparison of secret material using a length-dependent or early-exit comparison (memcmp/strcmp/strncmp or a byte loop with early break) instead of a constant-time comparison. If a secret/MAC/token is compared with a non-constant-time routine such that an attacker could exploit timing to recover it, report CWE-208. A constant-time compare (e.g. CRYPTO_memcmp, timingsafe_bcmp, accumulate-with-OR) is not a vulnerability."
+    },
+    {
+      "id": "insecure_deserialization",
+      "name": "Insecure deserialization",
+      "severity": "high",
+      "cwe": "CWE-502",
+      "name_keywords": ["unserialize", "deserialize", "readobject", "readexternal", "unpickle", "loadpickle", "unmarshal", "parseobject", "decodeobject", "fromwire", "readresolve"],
+      "name_regex": [],
+      "string_keywords": ["pickle", "__reduce__", "BinaryFormatter", "ObjectInputStream", "yaml.load", "TypeNameHandling", "marshal.loads"],
+      "prompt": "This function appears to deserialize data into in-memory objects. The risk is insecure deserialization (CWE-502): reconstructing arbitrary object types, or invoking magic/callback/finalizer methods, from attacker-controlled bytes, leading to remote code execution or object injection. Inspect whether the input being deserialized is untrusted (network/file/IPC) and whether the object TYPE is taken from the input (polymorphic deserialization, gadget instantiation) without an allowlist of permitted types, and whether the bytes are integrity-checked (signature/HMAC) BEFORE being deserialized. Report a weakness only when untrusted data is deserialized without type restriction or prior integrity verification. Deserialization of trusted/local data, or with a strict type allowlist and verified integrity, is not vulnerable."
+    }
+  ]
+}
